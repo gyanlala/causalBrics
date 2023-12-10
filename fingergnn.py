@@ -3,6 +3,7 @@ import math
 from torch_geometric.nn import MessagePassing
 from torch_geometric.nn import global_add_pool, global_mean_pool, global_max_pool, GlobalAttention, Set2Set
 import torch.nn.functional as F
+import numpy as np
 from torch_geometric.nn.inits import uniform
 
 from conv import GNN_node, GNN_node_Virtualnode
@@ -14,7 +15,6 @@ class SubMaskGenerator(torch.nn.Module):
         super(SubMaskGenerator,self).__init__()
         self.mask_nn = torch.nn.Sequential(
             torch.nn.Linear(emb_dim,2*emb_dim),
-            torch.nn.BatchNorm1d(2*emb_dim),
             torch.nn.ReLU(),
             torch.nn.Dropout(),
             torch.nn.Linear(2*emb_dim,1)
@@ -24,11 +24,11 @@ class SubMaskGenerator(torch.nn.Module):
         mask = self.mask_nn(subgraph_features).squeeze()
         return torch.sigmoid(mask)
 
-class CausalGNN(torch.nn.Module):
-    def __init__(self, num_tasks, num_layer = 4, emb_dim = 256, 
+class FingerGNN(torch.nn.Module):
+    def __init__(self, num_tasks, fingerprint_dim = 2215,num_layer = 4, emb_dim = 256, 
                     gnn_type = 'gin', virtual_node = True, residual = False, drop_ratio = 0.1, JK = "last", graph_pooling = "mean", threshold = 0.5):
         
-        super(CausalGNN,self).__init__()
+        super(FingerGNN,self).__init__()
         # 全图GNN
         self.gnn = BaseGNN(num_tasks,num_layer,emb_dim,gnn_type,virtual_node,residual,drop_ratio,JK,graph_pooling)
         # 子结构GNN
@@ -37,7 +37,9 @@ class CausalGNN(torch.nn.Module):
         self.sub_mask_generator = SubMaskGenerator(emb_dim)
         # BRICS过滤值
         self.threshold = threshold
-        self.combined_linear = torch.nn.Linear(2*emb_dim,num_tasks)
+        # fingerprints线性层
+        self.fingerprint_linear = torch.nn.Linear(fingerprint_dim,emb_dim)
+        self.combined_linear = torch.nn.Linear(3*emb_dim,num_tasks)
     
     def feature_from_subs(self,subs,device,return_mask=False):
         substructure_graph,mask = graph_from_substructure(subs,return_mask,'pyg')
@@ -46,9 +48,10 @@ class CausalGNN(torch.nn.Module):
         return h_sub,mask
         
         
-    def forward(self,graphs,subs,aggr="sum"):
+    def forward(self,graphs,subs,fingerprints,aggr="mean"):
         h_graph = self.gnn(graphs)
         h_sub, mask = self.feature_from_subs(subs=subs,device=graphs.x.device,return_mask=True)
+        h_fingerprint = self.fingerprint_linear(fingerprints)
         
         # 生成子图掩码
         subgraph_mask = self.sub_mask_generator(h_sub)
@@ -70,7 +73,7 @@ class CausalGNN(torch.nn.Module):
             else:
                 h_sub_aligned[idx] += torch.zeros_like(h_sub[0])
 
-        h_combined = torch.cat([h_graph,h_sub_aligned],dim=1)
+        h_combined = torch.cat([h_graph,h_sub_aligned,h_fingerprint],dim=1)
 
         return self.combined_linear(h_combined)
     

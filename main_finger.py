@@ -1,9 +1,11 @@
+import random
 import torch
 from torch_geometric.loader import DataLoader
 import torch.optim as optim
 import torch.nn.functional as F
 from gnn import DualGNN,DualGNN1
 from causalgnn import CausalGNN
+from fingergnn import FingerGNN
 
 from tqdm import tqdm
 import argparse
@@ -17,6 +19,8 @@ import datetime
 ### importing OGB
 from dataprocess import motif_dataset
 from ogb.graphproppred import PygGraphPropPredDataset, Evaluator
+### import fingerprint
+from gtrick import ogb2fp
 
 cls_criterion = torch.nn.BCEWithLogitsLoss()
 reg_criterion = torch.nn.MSELoss()
@@ -24,13 +28,15 @@ reg_criterion = torch.nn.MSELoss()
 def train_one_epoch(model, device, loader, optimizer, task_type):
     model.train()
 
-    for step, (subs,graphs) in enumerate(tqdm(loader, desc="Iteration")):
+    for step, (subs,graphs,fingerprints) in enumerate(tqdm(loader, desc="Iteration")):
+
         subs = [eval(x) for x in subs]
         graphs = graphs.to(device)
+        fingerprints = fingerprints.to(device)
         if graphs.x.shape[0] == 1 or graphs.batch[-1] == 0:
             pass
         else:
-            pred = model(graphs,subs)
+            pred = model(graphs,subs,fingerprints)
             optimizer.zero_grad()
             ## ignore nan targets (unlabeled) when computing training loss.
             is_labeled = graphs.y == graphs.y
@@ -46,15 +52,16 @@ def eval_one_epoch(model, device, loader, evaluator):
     y_true = []
     y_pred = []
 
-    for step, (subs,graphs) in enumerate(tqdm(loader, desc="Iteration")):
+    for step, (subs,graphs,fingerprints) in enumerate(tqdm(loader, desc="Iteration")):
         subs = [eval(x) for x in subs]
         graphs = graphs.to(device)
+        fingerprints = fingerprints.to(device)
 
         if graphs.x.shape[0] == 1:
             pass
         else:
             with torch.no_grad():
-                pred = model(graphs,subs)
+                pred = model(graphs,subs,fingerprints)
 
             y_true.append(graphs.y.view(pred.shape).detach().cpu())
             y_pred.append(pred.detach().cpu())
@@ -68,6 +75,13 @@ def eval_one_epoch(model, device, loader, evaluator):
 
 
 def main():
+    random_seed = 42
+    random.seed(random_seed)
+    np.random.seed(random_seed)
+    torch.manual_seed(random_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(random_seed)
+
     # Training settings
     parser = argparse.ArgumentParser(description='GNN baselines on ogbgmol* data with Pytorch Geometrics')
     parser.add_argument('--device', type=int, default=0,
@@ -86,9 +100,10 @@ def main():
                         help='number of epochs to train (default: 100)')
     parser.add_argument('--num_workers', type=int, default=0,
                         help='number of workers (default: 0)')
-    parser.add_argument('--dataset', type=str, default="ogbg-molhiv",
+    parser.add_argument('--dataset', type=str, default="ogbg-molsider",
                         help='dataset name (default: ogbg-molhiv)')
-
+    parser.add_argument('--dataset_path', type=str, default="./dataset",
+                        help='path to dataset')
     parser.add_argument('--feature', type=str, default="full",
                         help='full feature or simple feature')
     parser.add_argument('--filename', type=str, default="",
@@ -96,7 +111,7 @@ def main():
     args = parser.parse_args()
     
     current_time = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-    auto_filename = f'logs/results_{current_time}.txt'
+    auto_filename = f'logs/fingerprint/results_{current_time}.txt'
     
     if not args.filename:
         args.filename = auto_filename
@@ -106,6 +121,10 @@ def main():
     ### automatic dataloading and splitting
     # dataset = PygGraphPropPredDataset(name = args.dataset)
     total_smiles,total_subs,dataset = motif_dataset(args.dataset)
+
+    # get fingerprint feature
+    fingerprints, y = ogb2fp(args.dataset, args.dataset_path)
+    fingerprints = torch.tensor(fingerprints, dtype=torch.float32)
 
     if args.feature == 'full':
         pass 
@@ -120,9 +139,7 @@ def main():
     evaluator = Evaluator(args.dataset)
     
     split_idx = dataset.get_idx_split()
-    train_idx = split_idx['train']
-    valid_idx = split_idx['valid']
-    test_idx = split_idx['test']
+    train_idx, valid_idx, test_idx = split_idx['train'], split_idx['valid'], split_idx['test']
     
     train_dataset = dataset[train_idx]
     valid_dataset = dataset[valid_idx]
@@ -130,20 +147,23 @@ def main():
     train_subs = [str(total_subs[x.item()]) for x in train_idx]
     valid_subs = [str(total_subs[x.item()]) for x in valid_idx]
     test_subs = [str(total_subs[x.item()]) for x in test_idx]
+    train_fingerprints = fingerprints[train_idx]
+    valid_fingerprints = fingerprints[valid_idx]
+    test_fingerprints = fingerprints[test_idx]
 
-    train_loader = DataLoader(list(zip(train_subs,train_dataset)), batch_size=args.batch_size, shuffle=True, num_workers = args.num_workers)
-    valid_loader = DataLoader(list(zip(valid_subs,valid_dataset)), batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
-    test_loader = DataLoader(list(zip(test_subs,test_dataset)), batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
+    train_loader = DataLoader(list(zip(train_subs,train_dataset,train_fingerprints)), batch_size=args.batch_size, shuffle=True, num_workers = args.num_workers)
+    valid_loader = DataLoader(list(zip(valid_subs,valid_dataset,valid_fingerprints)), batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
+    test_loader = DataLoader(list(zip(test_subs,test_dataset,test_fingerprints)), batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
 
     
     if args.gnn == 'gin':
-        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = False).to(device)
+        model = FingerGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, fingerprint_dim = fingerprints.shape[1], num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = False).to(device)
     elif args.gnn == 'gin-virtual':
-        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = True).to(device)
+        model = FingerGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, fingerprint_dim = fingerprints.shape[1], num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = True).to(device)
     elif args.gnn == 'gcn':
-        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = False).to(device)
+        model = FingerGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, fingerprint_dim = fingerprints.shape[1], num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = False).to(device)
     elif args.gnn == 'gcn-virtual':
-        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = True).to(device)
+        model = FingerGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, fingerprint_dim = fingerprints.shape[1], num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = True).to(device)
     else:
         raise ValueError('Invalid GNN type')
 
