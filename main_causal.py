@@ -54,7 +54,7 @@ def eval_one_epoch(model, device, loader, evaluator):
             pass
         else:
             with torch.no_grad():
-                pred = model(graphs,subs)
+                pred, cosine_loss = model(graphs,subs)
 
             y_true.append(graphs.y.view(pred.shape).detach().cpu())
             y_pred.append(pred.detach().cpu())
