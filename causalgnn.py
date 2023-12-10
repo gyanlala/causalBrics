@@ -3,6 +3,7 @@ import math
 from torch_geometric.nn import MessagePassing
 from torch_geometric.nn import global_add_pool, global_mean_pool, global_max_pool, GlobalAttention, Set2Set
 import torch.nn.functional as F
+import numpy as np
 from torch_geometric.nn.inits import uniform
 
 from conv import GNN_node, GNN_node_Virtualnode
@@ -14,9 +15,13 @@ class SubMaskGenerator(torch.nn.Module):
         super(SubMaskGenerator,self).__init__()
         self.mask_nn = torch.nn.Sequential(
             torch.nn.Linear(emb_dim,2*emb_dim),
-            torch.nn.BatchNorm1d(2*emb_dim),
+            # torch.nn.Linear(emb_dim,4*emb_dim),
+            # torch.nn.BatchNorm1d(4*emb_dim),
+            # torch.nn.LeakyReLU(),
             torch.nn.ReLU(),
             torch.nn.Dropout(),
+            # torch.nn.Linear(4*emb_dim,2*emb_dim),
+            # torch.nn.LeakyReLU(),
             torch.nn.Linear(2*emb_dim,1)
         )
     
@@ -70,9 +75,13 @@ class CausalGNN(torch.nn.Module):
             else:
                 h_sub_aligned[idx] += torch.zeros_like(h_sub[0])
 
+        # 计算 h_graph 与 h_sub_aligned 的余弦相似度，进行特征空间的对齐
+        cosine_sim = F.cosine_similarity(h_sub_aligned,h_graph)
+        cosine_loss = 1 - cosine_sim.mean()
+
         h_combined = torch.cat([h_graph,h_sub_aligned],dim=1)
 
-        return self.combined_linear(h_combined)
+        return self.combined_linear(h_combined), cosine_loss
     
 class BaseGNN(torch.nn.Module):
 

@@ -52,6 +52,7 @@ class FingerGNN(torch.nn.Module):
         h_graph = self.gnn(graphs)
         h_sub, mask = self.feature_from_subs(subs=subs,device=graphs.x.device,return_mask=True)
         h_fingerprint = self.fingerprint_linear(fingerprints)
+        print(h_fingerprint.shape)
         
         # 生成子图掩码
         subgraph_mask = self.sub_mask_generator(h_sub)
@@ -74,6 +75,7 @@ class FingerGNN(torch.nn.Module):
                 h_sub_aligned[idx] += torch.zeros_like(h_sub[0])
 
         h_combined = torch.cat([h_graph,h_sub_aligned,h_fingerprint],dim=1)
+        print(h_combined.shape)
 
         return self.combined_linear(h_combined)
     
