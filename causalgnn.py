@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+
 import math
 from torch_geometric.nn import MessagePassing
 from torch_geometric.nn import global_add_pool, global_mean_pool, global_max_pool, GlobalAttention, Set2Set
@@ -8,7 +10,7 @@ from torch_geometric.nn.inits import uniform
 
 from conv import GNN_node, GNN_node_Virtualnode
 
-from dataprocess import graph_from_substructure
+from dataprocess import graph_from_substructure, draw_explain_graph
 
 class SubMaskGenerator(torch.nn.Module):
     def __init__(self,emb_dim):
@@ -28,16 +30,16 @@ class SubMaskGenerator(torch.nn.Module):
     def forward(self,subgraph_features):
         mask = self.mask_nn(subgraph_features).squeeze()
         return torch.sigmoid(mask)
-
+        
 class CausalGNN(torch.nn.Module):
     def __init__(self, num_tasks, num_layer = 4, emb_dim = 256, 
-                    gnn_type = 'gin', virtual_node = True, residual = False, drop_ratio = 0.1, JK = "last", graph_pooling = "mean", threshold = 0.5):
+                    gnn_type = 'gin', virtual_node = True, residual = False, drop_ratio = 0.1, JK = "last", graph_pooling = "mean", threshold = 0.4):
         
         super(CausalGNN,self).__init__()
         # 全图GNN
-        self.gnn = BaseGNN(num_tasks,num_layer,emb_dim,gnn_type,virtual_node,residual,drop_ratio,JK,graph_pooling)
+        self.gnn = BaseGNN(num_tasks,num_layer,emb_dim,gnn_type,virtual_node,residual,drop_ratio,JK,"mean")
         # 子结构GNN
-        self.sub_gnn = BaseGNN(num_tasks,5,emb_dim,gnn_type,virtual_node,residual,0.1,JK,graph_pooling)
+        self.sub_gnn = BaseGNN(num_tasks,3,emb_dim,gnn_type,virtual_node,residual,0.1,JK,"mean")
         # 子结构mask
         self.sub_mask_generator = SubMaskGenerator(emb_dim)
         # BRICS过滤值
@@ -45,13 +47,13 @@ class CausalGNN(torch.nn.Module):
         self.combined_linear = torch.nn.Linear(2*emb_dim,num_tasks)
     
     def feature_from_subs(self,subs,device,return_mask=False):
-        substructure_graph,mask = graph_from_substructure(subs,return_mask,'pyg')
+        substructure_graph, mask = graph_from_substructure(subs,return_mask,'pyg')
         substructure_graph = substructure_graph.to(device)
         h_sub = self.sub_gnn(substructure_graph)
         return h_sub,mask
         
         
-    def forward(self,graphs,subs,aggr="sum"):
+    def forward(self,smiles,graphs,subs,aggr="mean"):
         h_graph = self.gnn(graphs)
         h_sub, mask = self.feature_from_subs(subs=subs,device=graphs.x.device,return_mask=True)
         
@@ -65,6 +67,7 @@ class CausalGNN(torch.nn.Module):
             # 计算每个分子图的有效子结构索引
             sub_indices_idx = torch.where(sub_indices)[0]
             cur_subgraph_mask = subgraph_mask[sub_indices_idx].cpu()
+
             valid_sub_indices = sub_indices_idx[cur_subgraph_mask > self.threshold]
 
             if len(valid_sub_indices) > 0:
@@ -74,6 +77,7 @@ class CausalGNN(torch.nn.Module):
                     h_sub_aligned[idx] += h_sub[valid_sub_indices].mean(dim=0)
             else:
                 h_sub_aligned[idx] += torch.zeros_like(h_sub[0])
+                # h_sub_aligned[idx] += h_graph[idx]
 
         # 计算 h_graph 与 h_sub_aligned 的余弦相似度，进行特征空间的对齐
         cosine_sim = F.cosine_similarity(h_sub_aligned,h_graph)
@@ -81,7 +85,7 @@ class CausalGNN(torch.nn.Module):
 
         h_combined = torch.cat([h_graph,h_sub_aligned],dim=1)
 
-        return self.combined_linear(h_combined), cosine_loss
+        return self.combined_linear(h_combined), cosine_loss, mask, subgraph_mask
     
 class BaseGNN(torch.nn.Module):
 

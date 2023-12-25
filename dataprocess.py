@@ -8,6 +8,10 @@ from functools import reduce
 from ogb.utils import smiles2graph
 from torch_geometric.data import Data
 
+from rdkit import Chem
+from rdkit.Chem import Draw
+import re
+
 def motif_dataset(dataset_name):
     from ogb.graphproppred import PygGraphPropPredDataset
     from torch_geometric.loader import DataLoader
@@ -75,4 +79,48 @@ def graph_from_substructure(subs, return_mask=False, return_type='numpy'):
         return result, mask
     else:
         return result
+
+def draw_explain_graph(smiles, subs, masks, sub_masks, threshold, global_id):
+    if not os.path.exists('graphs'):
+        os.makedirs('graphs')
+
+    for idx in range(len(smiles)):
+        cur_smiles = smiles[idx]
+        brics_fragments = subs[idx]
+        mol = Chem.MolFromSmiles(cur_smiles)
+
+        # 获取当前分子图子结构mask
+        sub_indices = torch.from_numpy(masks[idx])
+        sub_indices_idx = torch.where(sub_indices)[0]
+        cur_subgraph_mask = sub_masks[sub_indices_idx].cpu()
+
+        # 根据子结构重要程度设置节点颜色
+        highlight_atoms = []
+        for frag, importance in zip(brics_fragments, cur_subgraph_mask):
+            if importance > threshold:
+                frag_no_tags = remove_brics_tags(frag)
+                if frag_no_tags:
+                    print(frag)
+                    print(frag_no_tags)
+                    print('----------------------')
+                    submol = Chem.MolFromSmarts(frag_no_tags)
+                    atoms = mol.GetSubstructMatch(submol)
+                    if atoms:
+                        highlight_atoms.extend(atoms)
+                else:
+                    print(f"Invalid SMARTS after removing BRICS tags: {frag}")
+
+        img = Draw.MolToImage(mol,highlightAtoms=highlight_atoms, size=(300, 300))
+        img_path = f'graphs/mol_{global_id + idx}.png'
+        img.save(img_path)
+
+def remove_brics_tags(smiles):
+    # 先移除BRICS标记
+    modified_smiles = re.sub(r'\[\d+\*\]', '', smiles)
+    # 再移除空括号
+    modified_smiles = re.sub(r'\(\)', '', modified_smiles)
+    # 确保处理后的字符串不是空的
+    return modified_smiles if modified_smiles.strip() else None
+
+        
 

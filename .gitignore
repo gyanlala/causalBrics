@@ -153,6 +153,8 @@ dmypy.json
 cython_debug/
 
 # dirs
+saved_models/
+graphs/
 logs/
 dataset/
 preprocess/

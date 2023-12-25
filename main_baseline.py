@@ -2,7 +2,7 @@ import torch
 from torch_geometric.loader import DataLoader
 import torch.optim as optim
 import torch.nn.functional as F
-from gnn import DualGNN,DualGNN1
+from gnn import GNN
 
 from tqdm import tqdm
 import argparse
@@ -15,48 +15,46 @@ import json
 import datetime
 
 ### importing OGB
-from dataprocess import motif_dataset
 from ogb.graphproppred import PygGraphPropPredDataset, Evaluator
 
 cls_criterion = torch.nn.BCEWithLogitsLoss()
 reg_criterion = torch.nn.MSELoss()
 
-def train_one_epoch(model, device, loader, optimizer, task_type):
+def train(model, device, loader, optimizer, task_type):
     model.train()
 
-    for step, (subs,graphs) in enumerate(tqdm(loader, desc="Iteration")):
-        subs = [eval(x) for x in subs]
-        graphs = graphs.to(device)
-        if graphs.x.shape[0] == 1 or graphs.batch[-1] == 0:
+    for step, batch in enumerate(tqdm(loader, desc="Iteration")):
+        batch = batch.to(device)
+
+        if batch.x.shape[0] == 1 or batch.batch[-1] == 0:
             pass
         else:
-            pred = model(graphs,subs)
+            pred = model(batch)
             optimizer.zero_grad()
             ## ignore nan targets (unlabeled) when computing training loss.
-            is_labeled = graphs.y == graphs.y
+            is_labeled = batch.y == batch.y
             if "classification" in task_type: 
-                loss = cls_criterion(pred.to(torch.float32)[is_labeled], graphs.y.to(torch.float32)[is_labeled])
+                loss = cls_criterion(pred.to(torch.float32)[is_labeled], batch.y.to(torch.float32)[is_labeled])
             else:
-                loss = reg_criterion(pred.to(torch.float32)[is_labeled], graphs.y.to(torch.float32)[is_labeled])
+                loss = reg_criterion(pred.to(torch.float32)[is_labeled], batch.y.to(torch.float32)[is_labeled])
             loss.backward()
             optimizer.step()
 
-def eval_one_epoch(model, device, loader, evaluator):
+def eval(model, device, loader, evaluator):
     model.eval()
     y_true = []
     y_pred = []
 
-    for step, (subs,graphs) in enumerate(tqdm(loader, desc="Iteration")):
-        subs = [eval(x) for x in subs]
-        graphs = graphs.to(device)
+    for step, batch in enumerate(tqdm(loader, desc="Iteration")):
+        batch = batch.to(device)
 
-        if graphs.x.shape[0] == 1:
+        if batch.x.shape[0] == 1:
             pass
         else:
             with torch.no_grad():
-                pred = model(graphs,subs)
+                pred = model(batch)
 
-            y_true.append(graphs.y.view(pred.shape).detach().cpu())
+            y_true.append(batch.y.view(pred.shape).detach().cpu())
             y_pred.append(pred.detach().cpu())
 
     y_true = torch.cat(y_true, dim = 0).numpy()
@@ -74,7 +72,7 @@ def main():
     torch.manual_seed(random_seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(random_seed)
-    
+
     # Training settings
     parser = argparse.ArgumentParser(description='GNN baselines on ogbgmol* data with Pytorch Geometrics')
     parser.add_argument('--device', type=int, default=0,
@@ -85,9 +83,9 @@ def main():
                         help='dropout ratio (default: 0.5)')
     parser.add_argument('--num_layer', type=int, default=5,
                         help='number of GNN message passing layers (default: 5)')
-    parser.add_argument('--emb_dim', type=int, default=256,
-                        help='dimensionality of hidden units in GNNs (default: 256)')
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--emb_dim', type=int, default=300,
+                        help='dimensionality of hidden units in GNNs (default: 300)')
+    parser.add_argument('--batch_size', type=int, default=16,
                         help='input batch size for training (default: 32)')
     parser.add_argument('--epochs', type=int, default=100,
                         help='number of epochs to train (default: 100)')
@@ -101,7 +99,7 @@ def main():
     parser.add_argument('--filename', type=str, default="",
                         help='filename to output result (default: )')
     args = parser.parse_args()
-    
+
     current_time = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
     auto_filename = f'logs/base/results_{current_time}.txt'
     
@@ -111,8 +109,7 @@ def main():
     device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
 
     ### automatic dataloading and splitting
-    # dataset = PygGraphPropPredDataset(name = args.dataset)
-    total_smiles,total_subs,dataset = motif_dataset(args.dataset)
+    dataset = PygGraphPropPredDataset(name = args.dataset)
 
     if args.feature == 'full':
         pass 
@@ -122,35 +119,23 @@ def main():
         dataset.data.x = dataset.data.x[:,:2]
         dataset.data.edge_attr = dataset.data.edge_attr[:,:2]
 
+    split_idx = dataset.get_idx_split()
 
     ### automatic evaluator. takes dataset name as input
     evaluator = Evaluator(args.dataset)
-    
-    split_idx = dataset.get_idx_split()
-    train_idx = split_idx['train']
-    valid_idx = split_idx['valid']
-    test_idx = split_idx['test']
-    
-    train_dataset = dataset[train_idx]
-    valid_dataset = dataset[valid_idx]
-    test_dataset = dataset[test_idx]
-    train_subs = [str(total_subs[x.item()]) for x in train_idx]
-    valid_subs = [str(total_subs[x.item()]) for x in valid_idx]
-    test_subs = [str(total_subs[x.item()]) for x in test_idx]
 
-    train_loader = DataLoader(list(zip(train_subs,train_dataset)), batch_size=args.batch_size, shuffle=True, num_workers = args.num_workers)
-    valid_loader = DataLoader(list(zip(valid_subs,valid_dataset)), batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
-    test_loader = DataLoader(list(zip(test_subs,test_dataset)), batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
+    train_loader = DataLoader(dataset[split_idx["train"]], batch_size=args.batch_size, shuffle=True, num_workers = args.num_workers)
+    valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
+    test_loader = DataLoader(dataset[split_idx["test"]], batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
 
-    
     if args.gnn == 'gin':
-        model = DualGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = False).to(device)
+        model = GNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = False).to(device)
     elif args.gnn == 'gin-virtual':
-        model = DualGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = True).to(device)
+        model = GNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = True).to(device)
     elif args.gnn == 'gcn':
-        model = DualGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = False).to(device)
+        model = GNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = False).to(device)
     elif args.gnn == 'gcn-virtual':
-        model = DualGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = True).to(device)
+        model = GNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = True).to(device)
     else:
         raise ValueError('Invalid GNN type')
 
@@ -163,12 +148,12 @@ def main():
     for epoch in range(1, args.epochs + 1):
         print("=====Epoch {}".format(epoch))
         print('Training...')
-        train_one_epoch(model, device, train_loader, optimizer, dataset.task_type)
+        train(model, device, train_loader, optimizer, dataset.task_type)
 
         print('Evaluating...')
-        train_perf = eval_one_epoch(model, device, train_loader, evaluator)
-        valid_perf = eval_one_epoch(model, device, valid_loader, evaluator)
-        test_perf = eval_one_epoch(model, device, test_loader, evaluator)
+        train_perf = eval(model, device, train_loader, evaluator)
+        valid_perf = eval(model, device, valid_loader, evaluator)
+        test_perf = eval(model, device, test_loader, evaluator)
 
         print({'Train': train_perf, 'Validation': valid_perf, 'Test': test_perf})
 
@@ -187,7 +172,6 @@ def main():
     print('Best validation score: {}'.format(valid_curve[best_val_epoch]))
     print('Test score: {}'.format(test_curve[best_val_epoch]))
 
-        
     if args.filename:
         save_dict = {
             'Val': valid_curve[best_val_epoch],
