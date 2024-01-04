@@ -21,27 +21,31 @@ from ogb.graphproppred import PygGraphPropPredDataset, Evaluator
 
 # settings
 parser = argparse.ArgumentParser(description='GNN baselines on ogbgmol* data with Pytorch Geometrics')
-parser.add_argument('--device', type=int, default=0,
+parser.add_argument('--device', type=int, default=1,
                     help='which gpu to use if any (default: 0)')
-parser.add_argument('--gnn', type=str, default='gcn',
+parser.add_argument('--gnn', type=str, default='gcn-virtual',
                     help='GNN gin, gin-virtual, or gcn, or gcn-virtual (default: gin-virtual)')
-parser.add_argument('--drop_ratio', type=float, default=0.5,
-                    help='dropout ratio (default: 0.5)')
+parser.add_argument('--drop_ratio', type=float, default=0.3,
+                    help='dropout ratio (default: 0.3)')
+parser.add_argument('--sub_drop_ratio', type=float, default=0.1,
+                    help='sub dropout ratio (default: 0.1)')
 parser.add_argument('--num_layer', type=int, default=5,
                     help='number of GNN message passing layers (default: 5)')
+parser.add_argument('--sub_num_layer', type=int, default=3,
+                    help='number of subGNN message passing layers (default: 3)')
 parser.add_argument('--emb_dim', type=int, default=256,
                     help='dimensionality of hidden units in GNNs (default: 256)')
-parser.add_argument('--batch_size', type=int, default=16,
+parser.add_argument('--batch_size', type=int, default=32,
                     help='input batch size for training (default: 32)')
-parser.add_argument('--threshold', type=str, default=0.42,
+parser.add_argument('--threshold', type=float, default=0.43,
                     help='threshold of substructure mask')
-parser.add_argument('--epochs', type=int, default=60,
+parser.add_argument('--epochs', type=int, default=50,
                     help='number of epochs to train (default: 100)')
 parser.add_argument('--num_workers', type=int, default=0,
                     help='number of workers (default: 0)')
-parser.add_argument('--alpha', type=int, default=0.5,
+parser.add_argument('--alpha', type=int, default=0.3,
                     help='weight for cosine similarity loss')
-parser.add_argument('--dataset', type=str, default="ogbg-molclintox",
+parser.add_argument('--dataset', type=str, default="ogbg-molbace",
                     help='dataset name (default: ogbg-molhiv)')
 parser.add_argument('--feature', type=str, default="full",
                     help='full feature or simple feature')
@@ -53,6 +57,7 @@ def get_model_params(args):
         'gnn_type': args.gnn,
         'num_tasks': dataset.num_tasks,
         'num_layer': args.num_layer,
+        'sub_num_layer': args.sub_num_layer,
         'emb_dim': args.emb_dim,
         'drop_ratio': args.drop_ratio,
         'virtual_node': 'virtual' in args.gnn,
@@ -75,7 +80,7 @@ def main(args, device):
         torch.backends.cudnn.benchmark = False
     
     current_time = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-    auto_filename = f'logs/attn_pooling1/results_{current_time}.txt'
+    auto_filename = f'logs/hiv/results_{current_time}.txt'
     
     if not args.filename:
         args.filename = auto_filename
@@ -117,13 +122,13 @@ def main(args, device):
 
     
     if args.gnn == 'gin':
-        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = False, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = False, threshold = args.threshold).to(device)
     elif args.gnn == 'gin-virtual':
-        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = True, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = True, threshold = args.threshold).to(device)
     elif args.gnn == 'gcn':
-        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = False, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = False, threshold = args.threshold).to(device)
     elif args.gnn == 'gcn-virtual':
-        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = True, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = True, threshold = args.threshold).to(device)
     else:
         raise ValueError('Invalid GNN type')
 
@@ -185,7 +190,9 @@ def main(args, device):
                 'Device': args.device,
                 'Feature': args.feature,
                 'Drop ratio': args.drop_ratio,
+                'Sub drop ratio': args.sub_drop_ratio,
                 'Number of layers': args.num_layer,
+                'Number of sub_layers': args.sub_num_layer,
                 'Embedding dimension': args.emb_dim,
                 'Batch size': args.batch_size,
                 'Threshold': args.threshold,
@@ -220,13 +227,13 @@ def explain(args, device, best_model_path):
 
     
     if args.gnn == 'gin':
-        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = False, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = False, threshold = args.threshold).to(device)
     elif args.gnn == 'gin-virtual':
-        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = True, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = True, threshold = args.threshold).to(device)
     elif args.gnn == 'gcn':
-        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = False, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = False, threshold = args.threshold).to(device)
     elif args.gnn == 'gcn-virtual':
-        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, virtual_node = True, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = True, threshold = args.threshold).to(device)
     else:
         raise ValueError('Invalid GNN type')
 
@@ -243,10 +250,10 @@ def explain(args, device, best_model_path):
             with torch.no_grad():
                 global_id = batch_idx * args.batch_size
                 pred, cosine_loss, mask, subgraph_mask = model(smiles,graphs,subs)
-                draw_explain_graph(smiles, subs, mask, subgraph_mask, 0.5, global_id)
+                draw_explain_graph(smiles, subs, mask, subgraph_mask, 0.6, global_id)
 
 if __name__ == "__main__":
     args = parser.parse_args()
     device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
     best_model_path = main(args,device)
-    explain(args, device, best_model_path)
+    # explain(args, device, best_model_path)

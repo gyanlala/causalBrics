@@ -32,14 +32,14 @@ class SubMaskGenerator(torch.nn.Module):
         return torch.sigmoid(mask)
         
 class CausalGNN(torch.nn.Module):
-    def __init__(self, num_tasks, num_layer = 4, emb_dim = 256, 
-                    gnn_type = 'gin', virtual_node = True, residual = False, drop_ratio = 0.1, JK = "last", graph_pooling = "mean", threshold = 0.4):
+    def __init__(self, num_tasks, num_layer = 4, sub_num_layer = 3, emb_dim = 256, 
+                    gnn_type = 'gin', virtual_node = True, residual = False, drop_ratio = 0.3, sub_drop_ratio = 0.1, JK = "last", graph_pooling = "mean", threshold = 0.4):
         
         super(CausalGNN,self).__init__()
         # 全图GNN
         self.gnn = BaseGNN(num_tasks,num_layer,emb_dim,gnn_type,virtual_node,residual,drop_ratio,JK,"mean")
         # 子结构GNN
-        self.sub_gnn = BaseGNN(num_tasks,3,emb_dim,gnn_type,virtual_node,residual,0.1,JK,"mean")
+        self.sub_gnn = BaseGNN(num_tasks,sub_num_layer,emb_dim,gnn_type,virtual_node,residual,sub_drop_ratio,JK,"mean")
         # 子结构mask
         self.sub_mask_generator = SubMaskGenerator(emb_dim)
         # BRICS过滤值
@@ -80,7 +80,11 @@ class CausalGNN(torch.nn.Module):
                 # h_sub_aligned[idx] += h_graph[idx]
 
         # 计算 h_graph 与 h_sub_aligned 的余弦相似度，进行特征空间的对齐
-        cosine_sim = F.cosine_similarity(h_sub_aligned,h_graph)
+        # 规范化 h_sub_aligned 和 h_graph
+        h_sub_aligned_norm = F.normalize(h_sub_aligned, p=2, dim=1)
+        h_graph_norm = F.normalize(h_graph, p=2, dim=1)
+
+        cosine_sim = F.cosine_similarity(h_sub_aligned_norm,h_graph_norm)
         cosine_loss = 1 - cosine_sim.mean()
 
         h_combined = torch.cat([h_graph,h_sub_aligned],dim=1)

@@ -21,7 +21,7 @@ def train_one_epoch(model, device, loader, optimizer, task_type, alpha):
                 loss = cls_criterion(pred.to(torch.float32)[is_labeled], graphs.y.to(torch.float32)[is_labeled])
             else:
                 loss = reg_criterion(pred.to(torch.float32)[is_labeled], graphs.y.to(torch.float32)[is_labeled])
-            total_loss = loss + alpha * cosine_loss
+            total_loss = (1 - alpha) * loss + alpha * cosine_loss
             total_loss.backward()
             optimizer.step()
 
