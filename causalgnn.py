@@ -37,9 +37,9 @@ class CausalGNN(torch.nn.Module):
         
         super(CausalGNN,self).__init__()
         # 全图GNN
-        self.gnn = BaseGNN(num_tasks,num_layer,emb_dim,gnn_type,virtual_node,residual,drop_ratio,JK,"mean")
+        self.gnn = BaseGNN(num_tasks,num_layer,emb_dim,gnn_type,virtual_node,residual,drop_ratio,JK,"sum")
         # 子结构GNN
-        self.sub_gnn = BaseGNN(num_tasks,sub_num_layer,emb_dim,gnn_type,virtual_node,residual,sub_drop_ratio,JK,"mean")
+        self.sub_gnn = BaseGNN(num_tasks,sub_num_layer,emb_dim,gnn_type,virtual_node,residual,sub_drop_ratio,JK,"sum")
         # 子结构mask
         self.sub_mask_generator = SubMaskGenerator(emb_dim)
         # BRICS过滤值

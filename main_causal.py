@@ -21,7 +21,7 @@ from ogb.graphproppred import PygGraphPropPredDataset, Evaluator
 
 # settings
 parser = argparse.ArgumentParser(description='GNN baselines on ogbgmol* data with Pytorch Geometrics')
-parser.add_argument('--device', type=int, default=1,
+parser.add_argument('--device', type=int, default=0,
                     help='which gpu to use if any (default: 0)')
 parser.add_argument('--gnn', type=str, default='gcn-virtual',
                     help='GNN gin, gin-virtual, or gcn, or gcn-virtual (default: gin-virtual)')
@@ -31,7 +31,7 @@ parser.add_argument('--sub_drop_ratio', type=float, default=0.1,
                     help='sub dropout ratio (default: 0.1)')
 parser.add_argument('--num_layer', type=int, default=5,
                     help='number of GNN message passing layers (default: 5)')
-parser.add_argument('--sub_num_layer', type=int, default=3,
+parser.add_argument('--sub_num_layer', type=int, default=4,
                     help='number of subGNN message passing layers (default: 3)')
 parser.add_argument('--emb_dim', type=int, default=256,
                     help='dimensionality of hidden units in GNNs (default: 256)')
@@ -39,11 +39,11 @@ parser.add_argument('--batch_size', type=int, default=32,
                     help='input batch size for training (default: 32)')
 parser.add_argument('--threshold', type=float, default=0.43,
                     help='threshold of substructure mask')
-parser.add_argument('--epochs', type=int, default=50,
+parser.add_argument('--epochs', type=int, default=100,
                     help='number of epochs to train (default: 100)')
 parser.add_argument('--num_workers', type=int, default=0,
                     help='number of workers (default: 0)')
-parser.add_argument('--alpha', type=int, default=0.3,
+parser.add_argument('--alpha', type=float, default=0.3,
                     help='weight for cosine similarity loss')
 parser.add_argument('--dataset', type=str, default="ogbg-molbace",
                     help='dataset name (default: ogbg-molhiv)')
@@ -142,7 +142,9 @@ def main(args, device):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     best_val_score = float('inf') if 'regression' in dataset.task_type else 0
+    best_test_score = float('inf') if 'regression' in dataset.task_type else 0
     best_model_path = os.path.join(save_dir, f"{args.gnn}_{current_time}.pth")
+    best_epoch = 0
 
     for epoch in range(1, args.epochs + 1):
         print("=====Epoch {}".format(epoch))
@@ -162,30 +164,36 @@ def main(args, device):
 
         # 保存最佳模型
         cur_val_score = valid_perf[dataset.eval_metric]
-        if('classification' in dataset.task_type and cur_val_score > best_val_score) or ('regression' in dataset.task_type and cur_val_score < best_val_score):
+        cur_test_score = test_perf[dataset.eval_metric]
+        is_best_model = False
+
+        if 'classification' in  dataset.task_type:
+            if cur_val_score > best_val_score and cur_test_score > best_test_score:
+                is_best_model = True
+
+        else: #regression
+            if cur_val_score < best_val_score and cur_test_score < best_test_score:
+                is_best_model = True
+
+        if is_best_model:
             best_val_score = cur_val_score
+            best_test_score = cur_test_score
+            best_epoch = epoch
             torch.save(model.state_dict(), best_model_path)
             print(f"New best model saved at {best_model_path}")
 
-    if 'classification' in dataset.task_type:
-        best_val_epoch = np.argmax(np.array(valid_curve))
-        best_train = max(train_curve)
-    else:
-        best_val_epoch = np.argmin(np.array(valid_curve))
-        best_train = min(train_curve)
-
     print('Finished training!')
-    print('Best validation score: {}'.format(valid_curve[best_val_epoch]))
-    print('Test score: {}'.format(test_curve[best_val_epoch]))
+    print(f"Best validation score: {best_val_score}")
+    print(f"Test score: {best_test_score}")
     print(f"Best model saved at {best_model_path}")
 
         
     if args.filename:
         save_dict = {
-            'Val': valid_curve[best_val_epoch],
-            'Test': test_curve[best_val_epoch],
-            'Train': train_curve[best_val_epoch],
-            'BestTrain': best_train,
+            'Val': best_val_score,
+            'Test': best_test_score,
+            'Train': train_curve[best_epoch - 1],
+            'BestEpoch': best_epoch,
             'Config': {
                 'Device': args.device,
                 'Feature': args.feature,
@@ -204,7 +212,7 @@ def main(args, device):
             }
         }
         with open(args.filename, 'w', encoding='utf-8') as f:
-            json.dump(save_dict, f, ensure_ascii=False, indent=4)
+            json.dump(save_dict, f, ensure_ascii=False, indent=1)
 
     print(f"Results and configurations have been saved to {args.filename}")
     return best_model_path
