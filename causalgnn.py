@@ -37,13 +37,14 @@ class CausalGNN(torch.nn.Module):
         
         super(CausalGNN,self).__init__()
         # 全图GNN
-        self.gnn = BaseGNN(num_tasks,num_layer,emb_dim,gnn_type,virtual_node,residual,drop_ratio,JK,"sum")
+        self.gnn = BaseGNN(num_tasks,num_layer,emb_dim,gnn_type,virtual_node,residual,drop_ratio,JK,"mean")
         # 子结构GNN
-        self.sub_gnn = BaseGNN(num_tasks,sub_num_layer,emb_dim,gnn_type,virtual_node,residual,sub_drop_ratio,JK,"sum")
+        self.sub_gnn = BaseGNN(num_tasks,sub_num_layer,emb_dim,gnn_type,virtual_node,residual,sub_drop_ratio,JK,"mean")
         # 子结构mask
         self.sub_mask_generator = SubMaskGenerator(emb_dim)
         # BRICS过滤值
         self.threshold = threshold
+        # self.combined_linear = torch.nn.Linear(emb_dim,num_tasks)
         self.combined_linear = torch.nn.Linear(2*emb_dim,num_tasks)
     
     def feature_from_subs(self,subs,device,return_mask=False):
@@ -52,7 +53,6 @@ class CausalGNN(torch.nn.Module):
         h_sub = self.sub_gnn(substructure_graph)
         return h_sub,mask
         
-        
     def forward(self,smiles,graphs,subs,aggr="mean"):
         h_graph = self.gnn(graphs)
         h_sub, mask = self.feature_from_subs(subs=subs,device=graphs.x.device,return_mask=True)
@@ -60,6 +60,14 @@ class CausalGNN(torch.nn.Module):
         # 生成子图掩码
         subgraph_mask = self.sub_mask_generator(h_sub)
         h_sub_aligned = torch.zeros_like(h_graph)
+        h_sub_env = torch.zeros_like(h_graph)
+
+        # print(h_sub_aligned)
+
+        if self.threshold == 1 :
+            h_combined = torch.cat([h_graph,h_sub_aligned],dim=1)
+            return self.combined_linear(h_combined), 0, mask, subgraph_mask
+
         
         for idx, sub_indices in enumerate(mask):
             if isinstance(sub_indices,np.ndarray):
@@ -69,6 +77,7 @@ class CausalGNN(torch.nn.Module):
             cur_subgraph_mask = subgraph_mask[sub_indices_idx].cpu()
 
             valid_sub_indices = sub_indices_idx[cur_subgraph_mask > self.threshold]
+            invalid_sub_indices = sub_indices_idx[cur_subgraph_mask <= self.threshold]
 
             if len(valid_sub_indices) > 0:
                 if aggr == "sum":
@@ -77,19 +86,61 @@ class CausalGNN(torch.nn.Module):
                     h_sub_aligned[idx] += h_sub[valid_sub_indices].mean(dim=0)
             else:
                 h_sub_aligned[idx] += torch.zeros_like(h_sub[0])
-                # h_sub_aligned[idx] += h_graph[idx]
+ 
+            if len(invalid_sub_indices) > 0:
+                if aggr == "sum":
+                    h_sub_env[idx] += h_sub[invalid_sub_indices].sum(dim=0)
+                elif aggr == "mean":
+                    h_sub_env[idx] += h_sub[invalid_sub_indices].mean(dim=0)
+            else:
+                h_sub_env[idx] += torch.zeros_like(h_sub[0])
 
-        # 计算 h_graph 与 h_sub_aligned 的余弦相似度，进行特征空间的对齐
-        # 规范化 h_sub_aligned 和 h_graph
-        h_sub_aligned_norm = F.normalize(h_sub_aligned, p=2, dim=1)
-        h_graph_norm = F.normalize(h_graph, p=2, dim=1)
+        # 对比学习损失计算
+        batch_size = graphs.batch.max().item() + 1
+        contrastive_loss = 0
 
-        cosine_sim = F.cosine_similarity(h_sub_aligned_norm,h_graph_norm)
-        cosine_loss = 1 - cosine_sim.mean()
+        # 随机选择负样本的数量
+        # num_neg_samples = min(10, batch_size - 1)  # 例如，每个样本最多选择10个负样本
+        num_neg_samples = batch_size
+
+        for i in range(batch_size):
+            cur_sub_repr = h_sub_aligned[i].unsqueeze(0)
+            if torch.all(cur_sub_repr == 0):
+                continue
+                
+            # 计算正样本距离
+            # 计算当前子结构表征与其他分子图有效子结构表征的余弦相似度
+            pos_distances = 1 - F.cosine_similarity(cur_sub_repr, h_sub_aligned, dim=1)
+
+            # 选择与当前分子图最接近的有效子结构表征作为正样本,排除当前分子图自身
+            # positive_sample = pos_distances.min()
+            positive_sample = pos_distances.sum() / (batch_size - 1)
+
+            # 计算负样本距离
+            neg_indices = torch.randperm(batch_size)[:num_neg_samples]
+
+            # 跳过全0的负样本
+            valid_neg_indices =  [idx.item() for idx in neg_indices if not torch.all(h_sub_env[idx] == 0)]
+            # print(valid_neg_indices)
+
+            # 计算平均负样本距离
+            if valid_neg_indices:
+                other_sub_repr = h_sub_env[valid_neg_indices]
+                neg_distances = 1 - F.cosine_similarity(cur_sub_repr, other_sub_repr, dim=1)
+                negative_sample = neg_distances.sum() / len(valid_neg_indices)
+            else:
+                continue
+
+            # print("positive sample:{},negative_sample:{}".format(positive_sample , negative_sample))
+
+            margin = 1  # 可调整的 margin 值
+            contrastive_loss += F.relu(positive_sample - negative_sample + margin)
+
+        contrastive_loss /= batch_size
 
         h_combined = torch.cat([h_graph,h_sub_aligned],dim=1)
 
-        return self.combined_linear(h_combined), cosine_loss, mask, subgraph_mask
+        return self.combined_linear(h_combined), contrastive_loss, mask, subgraph_mask
     
 class BaseGNN(torch.nn.Module):
 

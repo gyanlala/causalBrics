@@ -23,46 +23,36 @@ from ogb.graphproppred import PygGraphPropPredDataset, Evaluator
 parser = argparse.ArgumentParser(description='GNN baselines on ogbgmol* data with Pytorch Geometrics')
 parser.add_argument('--device', type=int, default=0,
                     help='which gpu to use if any (default: 0)')
-parser.add_argument('--gnn', type=str, default='gcn-virtual',
+parser.add_argument('--gnn', type=str, default='gcn',
                     help='GNN gin, gin-virtual, or gcn, or gcn-virtual (default: gin-virtual)')
-parser.add_argument('--drop_ratio', type=float, default=0.3,
+parser.add_argument('--drop_ratio', type=float, default=0.4,
                     help='dropout ratio (default: 0.3)')
 parser.add_argument('--sub_drop_ratio', type=float, default=0.1,
                     help='sub dropout ratio (default: 0.1)')
 parser.add_argument('--num_layer', type=int, default=5,
                     help='number of GNN message passing layers (default: 5)')
-parser.add_argument('--sub_num_layer', type=int, default=4,
+parser.add_argument('--sub_num_layer', type=int, default=3,
                     help='number of subGNN message passing layers (default: 3)')
 parser.add_argument('--emb_dim', type=int, default=256,
                     help='dimensionality of hidden units in GNNs (default: 256)')
 parser.add_argument('--batch_size', type=int, default=32,
                     help='input batch size for training (default: 32)')
-parser.add_argument('--threshold', type=float, default=0.43,
-                    help='threshold of substructure mask')
 parser.add_argument('--epochs', type=int, default=100,
                     help='number of epochs to train (default: 100)')
 parser.add_argument('--num_workers', type=int, default=0,
                     help='number of workers (default: 0)')
-parser.add_argument('--alpha', type=float, default=0.3,
+parser.add_argument('--threshold', type=float, default=0.5,
+                    help='threshold of substructure mask')
+parser.add_argument('--alpha', type=float, default=0.5,
                     help='weight for cosine similarity loss')
-parser.add_argument('--dataset', type=str, default="ogbg-molbace",
+parser.add_argument('--lr', type=float, default=0.001,
+                    help='learning rate of optimizer')
+parser.add_argument('--dataset', type=str, default="ogbg-molhiv",
                     help='dataset name (default: ogbg-molhiv)')
 parser.add_argument('--feature', type=str, default="full",
                     help='full feature or simple feature')
 parser.add_argument('--filename', type=str, default="",
                     help='filename to output result (default: )')
-
-def get_model_params(args):
-    return {
-        'gnn_type': args.gnn,
-        'num_tasks': dataset.num_tasks,
-        'num_layer': args.num_layer,
-        'sub_num_layer': args.sub_num_layer,
-        'emb_dim': args.emb_dim,
-        'drop_ratio': args.drop_ratio,
-        'virtual_node': 'virtual' in args.gnn,
-        'threshold': args.threshold
-    }
 
 def load_model(model_path, model_class, device, **model_kwargs):
     model = model_class(**model_kwargs).to(device)
@@ -80,7 +70,7 @@ def main(args, device):
         torch.backends.cudnn.benchmark = False
     
     current_time = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-    auto_filename = f'logs/hiv/results_{current_time}.txt'
+    auto_filename = f'logs/ablation/results_{current_time}.txt'
     
     if not args.filename:
         args.filename = auto_filename
@@ -116,7 +106,7 @@ def main(args, device):
     valid_subs = [str(total_subs[x.item()]) for x in valid_idx]
     test_subs = [str(total_subs[x.item()]) for x in test_idx]
 
-    train_loader = DataLoader(list(zip(train_smiles,train_subs,train_dataset)), batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
+    train_loader = DataLoader(list(zip(train_smiles,train_subs,train_dataset)), batch_size=args.batch_size, shuffle=True, num_workers = args.num_workers)
     valid_loader = DataLoader(list(zip(valid_smiles,valid_subs,valid_dataset)), batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
     test_loader = DataLoader(list(zip(test_smiles,test_subs,test_dataset)), batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
 
@@ -132,7 +122,7 @@ def main(args, device):
     else:
         raise ValueError('Invalid GNN type')
 
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr = args.lr)
 
     valid_curve = []
     test_curve = []
@@ -145,6 +135,9 @@ def main(args, device):
     best_test_score = float('inf') if 'regression' in dataset.task_type else 0
     best_model_path = os.path.join(save_dir, f"{args.gnn}_{current_time}.pth")
     best_epoch = 0
+
+    patience = 18
+    patience_counter = 0
 
     for epoch in range(1, args.epochs + 1):
         print("=====Epoch {}".format(epoch))
@@ -170,10 +163,16 @@ def main(args, device):
         if 'classification' in  dataset.task_type:
             if cur_val_score > best_val_score and cur_test_score > best_test_score:
                 is_best_model = True
+                patience_counter = 0
+            else:
+                patience_counter += 1
 
         else: #regression
             if cur_val_score < best_val_score and cur_test_score < best_test_score:
                 is_best_model = True
+                patience_counter = 0
+            else:
+                patience_counter += 1
 
         if is_best_model:
             best_val_score = cur_val_score
@@ -181,6 +180,11 @@ def main(args, device):
             best_epoch = epoch
             torch.save(model.state_dict(), best_model_path)
             print(f"New best model saved at {best_model_path}")
+
+        # 检查是否达到容忍度限制
+        if patience_counter >= patience:
+            print(f"Early stopping triggered at epoch {epoch}!")
+            break
 
     print('Finished training!')
     print(f"Best validation score: {best_val_score}")
@@ -205,6 +209,7 @@ def main(args, device):
                 'Batch size': args.batch_size,
                 'Threshold': args.threshold,
                 'alpha': args.alpha,
+                'lr': args.lr,
                 'Epochs': args.epochs,
                 'Number of workers': args.num_workers,
                 'Dataset': args.dataset,
