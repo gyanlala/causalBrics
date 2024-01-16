@@ -21,9 +21,9 @@ from ogb.graphproppred import PygGraphPropPredDataset, Evaluator
 
 # settings
 parser = argparse.ArgumentParser(description='GNN baselines on ogbgmol* data with Pytorch Geometrics')
-parser.add_argument('--device', type=int, default=0,
+parser.add_argument('--device', type=int, default=1,
                     help='which gpu to use if any (default: 0)')
-parser.add_argument('--gnn', type=str, default='gcn',
+parser.add_argument('--gnn', type=str, default='gcn-virtual',
                     help='GNN gin, gin-virtual, or gcn, or gcn-virtual (default: gin-virtual)')
 parser.add_argument('--drop_ratio', type=float, default=0.4,
                     help='dropout ratio (default: 0.3)')
@@ -41,7 +41,7 @@ parser.add_argument('--epochs', type=int, default=100,
                     help='number of epochs to train (default: 100)')
 parser.add_argument('--num_workers', type=int, default=0,
                     help='number of workers (default: 0)')
-parser.add_argument('--threshold', type=float, default=0.5,
+parser.add_argument('--threshold', type=float, default=0.45,
                     help='threshold of substructure mask')
 parser.add_argument('--alpha', type=float, default=0.5,
                     help='weight for cosine similarity loss')
@@ -70,7 +70,7 @@ def main(args, device):
         torch.backends.cudnn.benchmark = False
     
     current_time = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-    auto_filename = f'logs/ablation/results_{current_time}.txt'
+    auto_filename = f'logs/tune/results_{current_time}.txt'
     
     if not args.filename:
         args.filename = auto_filename

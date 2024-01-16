@@ -62,12 +62,10 @@ class CausalGNN(torch.nn.Module):
         h_sub_aligned = torch.zeros_like(h_graph)
         h_sub_env = torch.zeros_like(h_graph)
 
-        # print(h_sub_aligned)
-
         if self.threshold == 1 :
             h_combined = torch.cat([h_graph,h_sub_aligned],dim=1)
             return self.combined_linear(h_combined), 0, mask, subgraph_mask
-
+            # return self.combined_linear(h_graph), 0, mask, subgraph_mask
         
         for idx, sub_indices in enumerate(mask):
             if isinstance(sub_indices,np.ndarray):
@@ -77,7 +75,7 @@ class CausalGNN(torch.nn.Module):
             cur_subgraph_mask = subgraph_mask[sub_indices_idx].cpu()
 
             valid_sub_indices = sub_indices_idx[cur_subgraph_mask > self.threshold]
-            invalid_sub_indices = sub_indices_idx[cur_subgraph_mask <= self.threshold]
+            invalid_sub_indices = sub_indices_idx[cur_subgraph_mask <= (self.threshold - 0.05)]
 
             if len(valid_sub_indices) > 0:
                 if aggr == "sum":
@@ -95,45 +93,42 @@ class CausalGNN(torch.nn.Module):
             else:
                 h_sub_env[idx] += torch.zeros_like(h_sub[0])
 
-        # 对比学习损失计算
+        # 对比学习损失
+        # 有效子结构表征的相似度
         batch_size = graphs.batch.max().item() + 1
         contrastive_loss = 0
 
-        # 随机选择负样本的数量
-        # num_neg_samples = min(10, batch_size - 1)  # 例如，每个样本最多选择10个负样本
-        num_neg_samples = batch_size
+        valid_sim_matrix = 1 - F.cosine_similarity(h_sub_aligned.unsqueeze(1), h_sub_aligned.unsqueeze(0), dim=2)
+        non_zero_pos_indices = torch.any(h_sub_aligned != 0, dim=1)
+        pos_num = non_zero_pos_indices.sum() - 1
+
+        # print(h_sub_aligned)
+
+        # 过滤负样本
+        non_zero_neg_indices = torch.any(h_sub_env != 0, dim=1)
+        filtered_h_sub_env = h_sub_env[non_zero_neg_indices]
+        # print(filtered_h_sub_env)
+        # print(filtered_h_sub_env.size(0))
 
         for i in range(batch_size):
             cur_sub_repr = h_sub_aligned[i].unsqueeze(0)
             if torch.all(cur_sub_repr == 0):
                 continue
-                
-            # 计算正样本距离
-            # 计算当前子结构表征与其他分子图有效子结构表征的余弦相似度
-            pos_distances = 1 - F.cosine_similarity(cur_sub_repr, h_sub_aligned, dim=1)
-
-            # 选择与当前分子图最接近的有效子结构表征作为正样本,排除当前分子图自身
-            # positive_sample = pos_distances.min()
-            positive_sample = pos_distances.sum() / (batch_size - 1)
-
-            # 计算负样本距离
-            neg_indices = torch.randperm(batch_size)[:num_neg_samples]
-
-            # 跳过全0的负样本
-            valid_neg_indices =  [idx.item() for idx in neg_indices if not torch.all(h_sub_env[idx] == 0)]
-            # print(valid_neg_indices)
 
             # 计算平均负样本距离
-            if valid_neg_indices:
-                other_sub_repr = h_sub_env[valid_neg_indices]
-                neg_distances = 1 - F.cosine_similarity(cur_sub_repr, other_sub_repr, dim=1)
-                negative_sample = neg_distances.sum() / len(valid_neg_indices)
-            else:
+            if filtered_h_sub_env.size(0) == 0:
                 continue
+
+            neg_distances = 1 - F.cosine_similarity(cur_sub_repr, filtered_h_sub_env, dim=1)
+            negative_sample = neg_distances.sum() / filtered_h_sub_env.size(0)
+                
+            # 计算平均正样本距离
+            pos_distances = valid_sim_matrix[i]
+            positive_sample = pos_distances.sum() / pos_num
 
             # print("positive sample:{},negative_sample:{}".format(positive_sample , negative_sample))
 
-            margin = 1  # 可调整的 margin 值
+            margin = 1.5  # 可调整的 margin 值
             contrastive_loss += F.relu(positive_sample - negative_sample + margin)
 
         contrastive_loss /= batch_size
