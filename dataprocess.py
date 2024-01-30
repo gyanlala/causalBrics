@@ -87,18 +87,34 @@ def draw_explain_graph(smiles, subs, masks, sub_masks, threshold, global_id):
         os.makedirs('graphs/mols')
     if not os.path.exists('graphs/subs'):
         os.makedirs('graphs/subs')
+    if not os.path.exists('graphs/original_mols'):
+        os.makedirs('graphs/original_mols')  # 创建保存原始分子图像的目录
 
     for idx in range(len(smiles)):
         cur_smiles = smiles[idx]
+
+        # 处理SMILES字符串以用于文件名
+        safe_smiles = re.sub(r'[^\w.()-]', '', cur_smiles)  # 移除不适合文件名的字符
+
         brics_fragments = subs[idx]
         mol = Chem.MolFromSmiles(cur_smiles)
 
         # 绘制分子子结构图
-        # frags = BRICS.BreakBRICSBonds(mol)
-        # pieces=Chem.GetMolFrags(frags,asMols=True)
-        # subs_img = Draw.MolsToGridImage(pieces)
-        # subs_img_path = f'graphs/subs/{global_id + idx}.png'
-        # subs_img.save(subs_img_path)
+        frags = BRICS.BreakBRICSBonds(mol)
+        pieces=Chem.GetMolFrags(frags,asMols=True)
+
+        # 检查分子碎片数是否为2或3
+        if len(pieces) not in [2, 3]:
+            continue
+
+        # 绘制并保存原始分子图像
+        original_img = Draw.MolToImage(mol)
+        original_img_path = f'graphs/original_mols/{global_id}_{safe_smiles}_{idx}.png'
+        original_img.save(original_img_path)
+
+        subs_img = Draw.MolsToGridImage(pieces)
+        subs_img_path = f'graphs/subs/{global_id}_{safe_smiles}_{idx}.png'
+        subs_img.save(subs_img_path)
 
         # 获取当前分子图子结构mask
         sub_indices = torch.from_numpy(masks[idx])
@@ -130,13 +146,8 @@ def draw_explain_graph(smiles, subs, masks, sub_masks, threshold, global_id):
             
         if is_painted:
             # 绘制分子子结构图
-            frags = BRICS.BreakBRICSBonds(mol)
-            pieces=Chem.GetMolFrags(frags,asMols=True)
-            subs_img = Draw.MolsToGridImage(pieces)
-            subs_img_path = f'graphs/subs/{global_id + idx}.png'
-            subs_img.save(subs_img_path)
             img = Draw.MolToImage(mol, highlightAtoms=highlight_atoms, highlightBonds=highlight_bonds, size=(300, 300))
-            img_path = f'graphs/mols/{global_id + idx}.png'
+            img_path = f'graphs/mols/{global_id}_{safe_smiles}_{idx}.png'
             img.save(img_path)
 
 def remove_brics_tags(smiles):

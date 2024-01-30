@@ -41,13 +41,15 @@ parser.add_argument('--epochs', type=int, default=100,
                     help='number of epochs to train (default: 100)')
 parser.add_argument('--num_workers', type=int, default=0,
                     help='number of workers (default: 0)')
-parser.add_argument('--threshold', type=float, default=0.45,
+parser.add_argument('--threshold', type=float, default=0.55,
                     help='threshold of substructure mask')
+parser.add_argument('--margin', type=float, default=1.2,
+                    help='margin of contrastive loss')
 parser.add_argument('--alpha', type=float, default=0.5,
                     help='weight for cosine similarity loss')
 parser.add_argument('--lr', type=float, default=0.001,
                     help='learning rate of optimizer')
-parser.add_argument('--dataset', type=str, default="ogbg-molhiv",
+parser.add_argument('--dataset', type=str, default="ogbg-molclintox",
                     help='dataset name (default: ogbg-molhiv)')
 parser.add_argument('--feature', type=str, default="full",
                     help='full feature or simple feature')
@@ -70,7 +72,7 @@ def main(args, device):
         torch.backends.cudnn.benchmark = False
     
     current_time = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-    auto_filename = f'logs/tune/results_{current_time}.txt'
+    auto_filename = f'logs/gcn_virtual/results_{current_time}.txt'
     
     if not args.filename:
         args.filename = auto_filename
@@ -112,13 +114,13 @@ def main(args, device):
 
     
     if args.gnn == 'gin':
-        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = False, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = False, threshold = args.threshold, margin = args.margin).to(device)
     elif args.gnn == 'gin-virtual':
-        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = True, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = True, threshold = args.threshold, margin = args.margin).to(device)
     elif args.gnn == 'gcn':
-        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = False, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = False, threshold = args.threshold, margin = args.margin).to(device)
     elif args.gnn == 'gcn-virtual':
-        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = True, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = True, threshold = args.threshold, margin = args.margin).to(device)
     else:
         raise ValueError('Invalid GNN type')
 
@@ -136,7 +138,7 @@ def main(args, device):
     best_model_path = os.path.join(save_dir, f"{args.gnn}_{current_time}.pth")
     best_epoch = 0
 
-    patience = 18
+    patience = 30
     patience_counter = 0
 
     for epoch in range(1, args.epochs + 1):
@@ -208,6 +210,7 @@ def main(args, device):
                 'Embedding dimension': args.emb_dim,
                 'Batch size': args.batch_size,
                 'Threshold': args.threshold,
+                'margin': args.margin,
                 'alpha': args.alpha,
                 'lr': args.lr,
                 'Epochs': args.epochs,
@@ -240,13 +243,13 @@ def explain(args, device, best_model_path):
 
     
     if args.gnn == 'gin':
-        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = False, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = False, threshold = args.threshold, margin = args.margin).to(device)
     elif args.gnn == 'gin-virtual':
-        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = True, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gin', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = True, threshold = args.threshold, margin = args.margin).to(device)
     elif args.gnn == 'gcn':
-        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = False, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = False, threshold = args.threshold, margin = args.margin).to(device)
     elif args.gnn == 'gcn-virtual':
-        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = True, threshold = args.threshold).to(device)
+        model = CausalGNN(gnn_type = 'gcn', num_tasks = dataset.num_tasks, num_layer = args.num_layer, sub_num_layer = args.sub_num_layer, emb_dim = args.emb_dim, drop_ratio = args.drop_ratio, sub_drop_ratio = args.sub_drop_ratio, virtual_node = True, threshold = args.threshold, margin = args.margin).to(device)
     else:
         raise ValueError('Invalid GNN type')
 

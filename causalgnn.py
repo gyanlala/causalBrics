@@ -28,12 +28,12 @@ class SubMaskGenerator(torch.nn.Module):
         )
     
     def forward(self,subgraph_features):
-        mask = self.mask_nn(subgraph_features).squeeze()
+        mask = self.mask_nn(subgraph_features).squeeze(-1)
         return torch.sigmoid(mask)
         
 class CausalGNN(torch.nn.Module):
     def __init__(self, num_tasks, num_layer = 4, sub_num_layer = 3, emb_dim = 256, 
-                    gnn_type = 'gin', virtual_node = True, residual = False, drop_ratio = 0.3, sub_drop_ratio = 0.1, JK = "last", graph_pooling = "mean", threshold = 0.4):
+                    gnn_type = 'gin', virtual_node = True, residual = False, drop_ratio = 0.3, sub_drop_ratio = 0.1, JK = "last", graph_pooling = "mean", threshold = 0.4, margin = 1.0):
         
         super(CausalGNN,self).__init__()
         # 全图GNN
@@ -42,6 +42,8 @@ class CausalGNN(torch.nn.Module):
         self.sub_gnn = BaseGNN(num_tasks,sub_num_layer,emb_dim,gnn_type,virtual_node,residual,sub_drop_ratio,JK,"mean")
         # 子结构mask
         self.sub_mask_generator = SubMaskGenerator(emb_dim)
+        # 正负样本间隔
+        self.margin = margin
         # BRICS过滤值
         self.threshold = threshold
         # self.combined_linear = torch.nn.Linear(emb_dim,num_tasks)
@@ -52,7 +54,7 @@ class CausalGNN(torch.nn.Module):
         substructure_graph = substructure_graph.to(device)
         h_sub = self.sub_gnn(substructure_graph)
         return h_sub,mask
-        
+
     def forward(self,smiles,graphs,subs,aggr="mean"):
         h_graph = self.gnn(graphs)
         h_sub, mask = self.feature_from_subs(subs=subs,device=graphs.x.device,return_mask=True)
@@ -72,10 +74,11 @@ class CausalGNN(torch.nn.Module):
                 sub_indices = torch.from_numpy(sub_indices).to(graphs.x.device)
             # 计算每个分子图的有效子结构索引
             sub_indices_idx = torch.where(sub_indices)[0]
+
             cur_subgraph_mask = subgraph_mask[sub_indices_idx].cpu()
 
             valid_sub_indices = sub_indices_idx[cur_subgraph_mask > self.threshold]
-            invalid_sub_indices = sub_indices_idx[cur_subgraph_mask <= (self.threshold - 0.05)]
+            invalid_sub_indices = sub_indices_idx[cur_subgraph_mask <= (self.threshold - 0.1)]
 
             if len(valid_sub_indices) > 0:
                 if aggr == "sum":
@@ -128,14 +131,96 @@ class CausalGNN(torch.nn.Module):
 
             # print("positive sample:{},negative_sample:{}".format(positive_sample , negative_sample))
 
-            margin = 1.5  # 可调整的 margin 值
-            contrastive_loss += F.relu(positive_sample - negative_sample + margin)
+            contrastive_loss += F.relu(positive_sample - negative_sample + self.margin)
 
         contrastive_loss /= batch_size
 
         h_combined = torch.cat([h_graph,h_sub_aligned],dim=1)
 
         return self.combined_linear(h_combined), contrastive_loss, mask, subgraph_mask
+
+    # INFONCE Loss
+    # def forward(self, smiles, graphs, subs, aggr="mean"):
+    #     h_graph = self.gnn(graphs)
+    #     h_sub, mask = self.feature_from_subs(subs=subs,device=graphs.x.device,return_mask=True)
+        
+    #     # 生成子图掩码
+    #     subgraph_mask = self.sub_mask_generator(h_sub)
+    #     h_sub_aligned = torch.zeros_like(h_graph)
+    #     h_sub_env = torch.zeros_like(h_graph)
+
+    #     if self.threshold == 1 :
+    #         h_combined = torch.cat([h_graph,h_sub_aligned],dim=1)
+    #         return self.combined_linear(h_combined), 0, mask, subgraph_mask
+    #         # return self.combined_linear(h_graph), 0, mask, subgraph_mask
+        
+    #     for idx, sub_indices in enumerate(mask):
+    #         if isinstance(sub_indices,np.ndarray):
+    #             sub_indices = torch.from_numpy(sub_indices).to(graphs.x.device)
+    #         # 计算每个分子图的有效子结构索引
+    #         sub_indices_idx = torch.where(sub_indices)[0]
+    #         cur_subgraph_mask = subgraph_mask[sub_indices_idx].cpu()
+
+    #         valid_sub_indices = sub_indices_idx[cur_subgraph_mask > self.threshold]
+    #         invalid_sub_indices = sub_indices_idx[cur_subgraph_mask <= (self.threshold - 0.1)]
+
+    #         if len(valid_sub_indices) > 0:
+    #             if aggr == "sum":
+    #                 h_sub_aligned[idx] += h_sub[valid_sub_indices].sum(dim=0)
+    #             elif aggr == "mean":
+    #                 h_sub_aligned[idx] += h_sub[valid_sub_indices].mean(dim=0)
+    #         else:
+    #             h_sub_aligned[idx] += torch.zeros_like(h_sub[0])
+ 
+    #         if len(invalid_sub_indices) > 0:
+    #             if aggr == "sum":
+    #                 h_sub_env[idx] += h_sub[invalid_sub_indices].sum(dim=0)
+    #             elif aggr == "mean":
+    #                 h_sub_env[idx] += h_sub[invalid_sub_indices].mean(dim=0)
+    #         else:
+    #             h_sub_env[idx] += torch.zeros_like(h_sub[0])
+
+    #     batch_size = graphs.batch.max().item() + 1
+    #     contrastive_loss = 0
+
+    #     # 过滤负样本
+    #     non_zero_neg_indices = torch.any(h_sub_env != 0, dim=1)
+    #     filtered_h_sub_env = h_sub_env[non_zero_neg_indices]
+
+    #     temperature = 0.4  # 温度参数
+
+    #     for i in range(batch_size):
+    #         cur_sub_repr = h_sub_aligned[i].unsqueeze(0)
+    #         if torch.all(cur_sub_repr == 0):
+    #             continue
+
+    #         # 初始化neg_similarities为一个空张量
+    #         neg_similarities = torch.tensor([], device=cur_sub_repr.device)
+
+    #         # 计算与正样本的相似度
+    #         pos_similarities = F.cosine_similarity(cur_sub_repr, h_sub_aligned, dim=1) / temperature
+            
+    #         # 如果有负样本，则计算与负样本的相似度
+    #         if filtered_h_sub_env.size(0) > 0:
+    #             neg_similarities = F.cosine_similarity(cur_sub_repr, filtered_h_sub_env, dim=1) / temperature
+
+    #         # 二元交叉熵需要目标为0或1
+    #         pos_targets = torch.ones_like(pos_similarities)  # 正样本目标设置为1
+    #         neg_targets = torch.zeros_like(neg_similarities) # 负样本目标设置为0
+            
+    #         # 将正负样本相似度和目标合并
+    #         all_similarities = torch.cat((pos_similarities, neg_similarities), dim=0) if neg_similarities.nelement() != 0 else pos_similarities
+    #         all_targets = torch.cat((pos_targets, neg_targets), dim=0) if neg_similarities.nelement() != 0 else pos_targets
+
+    #         # 计算二元交叉熵损失
+    #         bce_loss = F.binary_cross_entropy_with_logits(all_similarities, all_targets)
+    #         contrastive_loss += bce_loss
+
+    #     contrastive_loss /= batch_size
+
+    #     h_combined = torch.cat([h_graph, h_sub_aligned], dim=1)
+
+    #     return self.combined_linear(h_combined), contrastive_loss, mask, subgraph_mask
     
 class BaseGNN(torch.nn.Module):
 
