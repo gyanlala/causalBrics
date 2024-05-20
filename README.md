@@ -1,2 +1,2 @@
-# causalBrics
-Solving molecular graph OOD problems at brics level
+# DLMRL:Enhancing Molecular Property Prediction with Dual-Level Representation Learning
+Mining molecular graphs at brics level
